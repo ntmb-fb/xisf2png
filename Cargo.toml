@@ -1,0 +1,37 @@
+[package]
+name = "xisf2png"
+version = "0.8.0"
+edition = "2021"
+description = "Convert XISF and FITS astronomical images to PNG, 4K-resized and stamped with the object name"
+build = "build.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "xisf2png"
+path = "src/main.rs"
+
+[[bin]]
+name = "xisf2png-gui"
+path = "src/bin/gui/main.rs"
+
+[dependencies]
+astropng-core = { git = "https://github.com/peterbuitho/astropng-core", tag = "v0.1.0" }
+image = { version = "0.25", default-features = false, features = ["png"] }
+eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "pollster", "common-controls-v6"] }
+
+# Windows only: registry access for the Explorer context-menu entry (no
+# reg.exe child process), and version-info + icon resources for the .exe files.
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56"
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
