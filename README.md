@@ -298,7 +298,7 @@ available as workflow artifacts.
 
 The conversion pipeline (XISF/FITS parsing, stretch, resize/stamp, WCS,
 SIMBAD lookup, batch orchestration) lives in
-[`astropng-core`](https://github.com/peterbuitho/astropng-core), a shared
+[`astropng-core`](https://github.com/ntmb-fb/astropng-core), a shared
 crate also used by this program's Go/Nim/Zig/Scala ports. This repo depends
 on it like any other crate and keeps only the CLI, the GUI, and OS shell
 integration.
@@ -311,4 +311,4 @@ integration.
 
 The stamp font, DejaVu Sans Condensed Bold, is embedded in `astropng-core`;
 its license is in
-[`astropng-core/assets/fonts/LICENSE-DejaVu.txt`](https://github.com/peterbuitho/astropng-core/blob/main/assets/fonts/LICENSE-DejaVu.txt).
+[`astropng-core/assets/fonts/LICENSE-DejaVu.txt`](https://github.com/ntmb-fb/astropng-core/blob/main/assets/fonts/LICENSE-DejaVu.txt).

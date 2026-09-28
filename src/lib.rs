@@ -3,7 +3,7 @@
 //! the `xisf2png-gui` desktop app.
 //!
 //! The conversion pipeline itself lives in the shared
-//! [`astropng-core`](https://github.com/peterbuitho/astropng-core) crate,
+//! [`astropng-core`](https://github.com/ntmb-fb/astropng-core) crate,
 //! also used by the Go/Nim/Zig/Scala ports of this program (via its C ABI).
 //! This crate re-exports the same public surface it always has, backed by
 //! that shared implementation.

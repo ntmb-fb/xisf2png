@@ -106,7 +106,7 @@ checksum = "175571dd1d178ced59193a6fc02dde1b972eb0bc56c892cde9beeceac5bf0f6b"
 [[package]]
 name = "astropng-core"
 version = "0.1.0"
-source = "git+https://github.com/peterbuitho/astropng-core?tag=v0.1.0#cb7b2aaca41ecb52a0f88d2434c0d0c6bc8b65ab"
+source = "git+https://github.com/ntmb-fb/astropng-core?tag=v0.1.0#3e41106643813e0912b7cfa4c11bd61674a78269"
 dependencies = [
  "ab_glyph",
  "base64 0.22.1",
