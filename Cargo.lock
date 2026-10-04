@@ -105,8 +105,8 @@ checksum = "175571dd1d178ced59193a6fc02dde1b972eb0bc56c892cde9beeceac5bf0f6b"
 
 [[package]]
 name = "astropng-core"
-version = "0.1.0"
-source = "git+https://github.com/ntmb-fb/astropng-core?tag=v0.1.0#3e41106643813e0912b7cfa4c11bd61674a78269"
+version = "0.2.0"
+source = "git+https://github.com/ntmb-fb/astropng-core?tag=v0.2.0#9e7636842f70afd80b303fc8ae023b4e7a46d8c1"
 dependencies = [
  "ab_glyph",
  "base64 0.22.1",
@@ -3229,7 +3229,7 @@ checksum = "163b33ed8786455e2fa5d72f554057ce3f3182425434f756cd39c99839d88e23"
 
 [[package]]
 name = "xisf2png"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "astropng-core",
  "eframe",

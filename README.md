@@ -81,7 +81,7 @@ running window instead.
 ## Command line
 
 ```
-xisf2png [input_dir] [output_dir] [--recursive|-r] [--overwrite] [--resize4k] [--filename] [--font <file>] [-j N]
+xisf2png [input_dir] [output_dir] [--recursive|-r] [--overwrite] [--resize4k] [--filename] [--no-ask] [--font <file>] [-j N]
 xisf2png [input_dir] [output_dir] --png-only [--recursive|-r] [--overwrite] [--filename] [--font <file>]
 xisf2png <file>... [output_dir] [--overwrite] [--resize4k] [--filename] [--font <file>]
 ```
@@ -105,6 +105,7 @@ two SIMBAD requests. Progress is printed in completion order.
 | `--overwrite`       | Overwrite existing `.png` files (default: skip them).       |
 | `--resize4k`        | Scale each PNG (up or down, aspect ratio kept) to cover 3840×2160, then center-crop to exactly 3840×2160 — no padding — and stamp the object name in the bottom-right corner (see [Object names](#object-names)). |
 | `--filename`        | Stamp the plain file name: ignore the header `OBJECT`, never go online. (`--no-lookup` and `--offline` are aliases.) |
+| `--no-ask`          | Do not ask for a nickname when an identified object has none (see *Asked when there is no nickname*). Never asked when not run in a terminal. |
 | `--png-only`        | Skip XISF/FITS conversion entirely: pick up existing `.png` files in `input_dir` and only run the `--resize4k` step on them (implies `--resize4k`). With no `output_dir` the PNGs are modified in place; with one they are copied there first, honouring `--overwrite`. |
 | `--font <file>`     | A `.ttf` / `.otf` font file for the file-name stamp. Default: the bundled DejaVu Sans Condensed Bold. `--font=<file>` also works. |
 | `-j`, `--concurrency N` | Convert `N` files in parallel. Default: number of CPUs, capped at 8. `-jN` also works. |
@@ -206,6 +207,16 @@ Sh2-155  = Cave Nebula (Cepheus)
 ```
 
 Your names override everything else.
+
+**Asked when there is no nickname.** When an identified object has no common
+name anywhere (SIMBAD, the built-in tables, your names file), you are asked
+for one: on the terminal in the CLI, in a small dialog in the GUI. It is
+optional: press Enter / "Skip" and the designation alone is stamped. Each
+object is asked about once per run, and a name you enter is appended to your
+names file (the one in use, else a new `names.txt` in the per-user config
+folder) so it is not asked again. The CLI only asks when run in a terminal;
+`--no-ask` (or unticking "Ask for a nickname when none is found" in the GUI)
+turns it off.
 
 ## Format support
 

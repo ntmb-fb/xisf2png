@@ -9,7 +9,7 @@ mod shell;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
@@ -68,6 +68,7 @@ fn main() -> eframe::Result {
             let mut app = App {
                 resize4k: true,
                 lookup: true,
+                ask_names: true,
                 incoming: Some(rx),
                 integration_installed: shell::is_installed(),
                 ..App::default()
@@ -200,7 +201,23 @@ fn path_row(ui: &mut egui::Ui, label: &str, text: &mut String, hint: &str) -> bo
 /// Messages from the worker thread.
 enum Msg {
     Progress(Progress),
+    /// An identified object has no nickname: ask for one. The worker waits
+    /// for the answer on `reply` (`None` = go without).
+    AskName {
+        designation: String,
+        kind: String,
+        reply: Sender<Option<String>>,
+    },
     Done(Result<Summary, String>),
+}
+
+/// A nickname question waiting for the user.
+struct NamePrompt {
+    designation: String,
+    kind: String,
+    text: String,
+    focused: bool,
+    reply: Sender<Option<String>>,
 }
 
 struct Job {
@@ -219,6 +236,8 @@ struct App {
     resize4k: bool,
     png_only: bool,
     lookup: bool,
+    /// Ask for a nickname when an identified object has none.
+    ask_names: bool,
     font_file: String,
     /// Explicit files (right-click selection, drag and drop, "Add files…").
     /// When non-empty they are processed instead of scanning `input_dir`.
@@ -233,6 +252,7 @@ struct App {
 
     // Run state
     job: Option<Job>,
+    name_prompt: Option<NamePrompt>,
     log: Vec<Progress>,
     done: usize,
     total: usize,
@@ -314,8 +334,22 @@ impl App {
 
         let ctx = ctx.clone();
         let cancel_flag = Arc::clone(&cancel);
+        let ask_names = self.ask_names;
         let handle = std::thread::spawn(move || {
-            let result = xisf2png::run(&opts, &cancel_flag, &mut |p| {
+            // Hand the question to the UI thread and wait for the answer.
+            let ask = |designation: &str, kind: &str| {
+                let (reply, answer) = mpsc::channel();
+                tx.send(Msg::AskName {
+                    designation: designation.to_string(),
+                    kind: kind.to_string(),
+                    reply,
+                })
+                .ok()?;
+                ctx.request_repaint();
+                answer.recv().ok().flatten()
+            };
+            let ask: Option<&xisf2png::AskName> = if ask_names { Some(&ask) } else { None };
+            let result = xisf2png::run_asking(&opts, &cancel_flag, ask, &mut |p| {
                 let _ = tx.send(Msg::Progress(p.clone()));
                 ctx.request_repaint();
             });
@@ -341,6 +375,19 @@ impl App {
                     self.total = p.total;
                     self.log.push(p);
                 }
+                Msg::AskName {
+                    designation,
+                    kind,
+                    reply,
+                } => {
+                    self.name_prompt = Some(NamePrompt {
+                        designation,
+                        kind,
+                        text: String::new(),
+                        focused: false,
+                        reply,
+                    });
+                }
                 Msg::Done(Ok(s)) => {
                     self.total = s.total;
                     self.summary = Some(s);
@@ -357,6 +404,54 @@ impl App {
                 let _ = h.join();
             }
             self.job = None;
+            self.name_prompt = None;
+        }
+    }
+
+    /// The "no nickname found" dialog. Skipping (or dismissing it) leaves the
+    /// object without a nickname.
+    fn name_prompt_ui(&mut self, ctx: &egui::Context) {
+        let Some(prompt) = &mut self.name_prompt else { return };
+        let mut answer: Option<Option<String>> = None;
+        let modal = egui::Modal::new(egui::Id::new("name-prompt")).show(ctx, |ui| {
+            ui.set_width(380.0);
+            ui.heading("No nickname found");
+            let what = if prompt.kind.is_empty() {
+                prompt.designation.clone()
+            } else {
+                format!("{} ({})", prompt.designation, prompt.kind)
+            };
+            ui.label(format!(
+                "{what} has no nickname. Enter one to stamp it on the image and \
+                 remember it, or skip."
+            ));
+            ui.add_space(4.0);
+            let edit = ui.add(
+                egui::TextEdit::singleline(&mut prompt.text)
+                    .hint_text("optional")
+                    .desired_width(f32::INFINITY),
+            );
+            if !prompt.focused {
+                edit.request_focus();
+                prompt.focused = true;
+            }
+            let entered = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.button("Use name").clicked() || entered {
+                    answer = Some(Some(prompt.text.clone()));
+                }
+                if ui.button("Skip").clicked() {
+                    answer = Some(None);
+                }
+            });
+        });
+        if answer.is_none() && modal.should_close() {
+            answer = Some(None);
+        }
+        if let Some(answer) = answer {
+            let _ = prompt.reply.send(answer);
+            self.name_prompt = None;
         }
     }
 
@@ -515,6 +610,14 @@ impl eframe::App for App {
                          nothing is found or offline.\n\
                          Unticked: stamp the plain file name (same as --filename in the CLI).",
                     );
+                    ui.add_enabled(
+                        self.lookup && (self.resize4k || self.png_only),
+                        egui::Checkbox::new(&mut self.ask_names, "Ask for a nickname when none is found"),
+                    )
+                    .on_hover_text(
+                        "When an identified object has no common name, ask for one \
+                         (optional). Names you enter are saved to your names file.",
+                    );
                 });
             });
 
@@ -661,6 +764,8 @@ impl eframe::App for App {
                     }
                 });
         });
+
+        self.name_prompt_ui(ui.ctx());
 
         // ---- Drag-and-drop overlay ----------------------------------------------
         let hovering = ui.ctx().input(|i| !i.raw.hovered_files.is_empty());

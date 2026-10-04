@@ -8,7 +8,9 @@
 //! This crate re-exports the same public surface it always has, backed by
 //! that shared implementation.
 
-pub use astropng_core::{collect_files, run, FileStatus, Label, Options, Progress, Stamper, Summary};
+pub use astropng_core::{
+    collect_files, run, run_asking, AskName, FileStatus, Label, Options, Progress, Stamper, Summary,
+};
 
 /// Kept as `xisf2png::post` for the GUI, which needs the bundled font bytes
 /// directly (for egui's font registration) rather than through [`Stamper`].

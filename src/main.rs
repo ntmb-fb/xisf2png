@@ -1,5 +1,6 @@
 //! xisf2png command-line interface.
 
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
@@ -15,6 +16,7 @@ fn main() -> ExitCode {
     };
     let mut input_dir: Option<String> = None;
     let mut output_dir: Option<String> = None;
+    let mut ask = true;
 
     let mut i = 0;
     while i < args.len() {
@@ -25,6 +27,7 @@ fn main() -> ExitCode {
             "--resize4k" | "-resize4k" => opts.resize4k = true,
             "--png-only" => opts.png_only = true,
             "--filename" | "--no-lookup" | "--offline" => opts.lookup = false,
+            "--no-ask" => ask = false,
             "-j" | "--concurrency" => {
                 i += 1;
                 match args.get(i).and_then(|s| s.parse::<usize>().ok()) {
@@ -108,7 +111,11 @@ fn main() -> ExitCode {
     let kind = opts.input_kind();
     let verb = if opts.png_only { "Processed" } else { "Converted" };
 
-    let summary = xisf2png::run(&opts, &AtomicBool::new(false), &mut |p| {
+    // Only ask for nicknames when there is someone at the terminal to answer.
+    let ask = ask && io::stdin().is_terminal() && io::stdout().is_terminal();
+    let ask: Option<&xisf2png::AskName> = if ask { Some(&ask_name) } else { None };
+
+    let summary = xisf2png::run_asking(&opts, &AtomicBool::new(false), ask, &mut |p| {
         let rel = p.rel.display();
         match &p.status {
             FileStatus::Ok => match &p.label {
@@ -152,11 +159,26 @@ fn main() -> ExitCode {
     }
 }
 
+/// Ask on the terminal for a nickname for an object that has none. Just
+/// pressing Enter skips it.
+fn ask_name(designation: &str, kind: &str) -> Option<String> {
+    let what = if kind.is_empty() {
+        designation.to_string()
+    } else {
+        format!("{designation} ({kind})")
+    };
+    print!("No nickname found for {what}. Enter one, or press Enter to skip: ");
+    io::stdout().flush().ok()?;
+    let mut line = String::new();
+    io::stdin().read_line(&mut line).ok()?;
+    Some(line)
+}
+
 fn usage() {
     eprintln!(
         "xisf2png {} - batch convert XISF and FITS astronomical images to PNG\n\n\
          Usage:\n\
-         \x20 xisf2png [input_dir] [output_dir] [--recursive|-r] [--overwrite] [--resize4k] [--filename] [-j N]\n\
+         \x20 xisf2png [input_dir] [output_dir] [--recursive|-r] [--overwrite] [--resize4k] [--filename] [--no-ask] [-j N]\n\
          \x20 xisf2png [input_dir] [output_dir] --png-only [--recursive|-r] [--overwrite] [--filename]\n\
          \x20 xisf2png <file>... [output_dir] [--overwrite] [--resize4k] [--filename]\n\n\
          Converts every .xisf, .fits, .fit and .fts file found in input_dir, or\n\
@@ -176,6 +198,9 @@ fn usage() {
          \x20                    and coordinates. Falls back to the file name.\n\
          \x20     --filename     stamp the plain file name: no header OBJECT, no\n\
          \x20                    online lookup (aliases: --no-lookup, --offline)\n\
+         \x20     --no-ask       do not ask for a nickname when an identified object
+         \x20                    has none (never asked when not run in a terminal).
+         \x20                    Nicknames you enter are saved to your names file.
          \x20     --png-only     skip XISF/FITS conversion: take existing .png files in\n\
          \x20                    input_dir and only resize/annotate them (implies\n\
          \x20                    --resize4k). Edited in place when output_dir is\n\
