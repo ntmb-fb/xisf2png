@@ -210,7 +210,10 @@ Your names override everything else.
 
 **Asked when there is no nickname.** When an identified object has no common
 name anywhere (SIMBAD, the built-in tables, your names file), you are asked
-for one: on the terminal in the CLI, in a small dialog in the GUI. It is
+for one: on the terminal in the CLI, in a small dialog in the GUI. When the
+online lookup cannot identify the image at all (the object is not in SIMBAD,
+or the service is unreachable), the designation from the file name or header
+`OBJECT` is asked about instead of silently stamping the bare file name. It is
 optional: press Enter / "Skip" and the designation alone is stamped. Each
 object is asked about once per run, and a name you enter is appended to your
 names file (the one in use, else a new `names.txt` in the per-user config
