@@ -37,16 +37,20 @@ jobs:
           script: |
             const { owner, repo } = context.repo;
             const { data: info } = await github.rest.repos.get({ owner, repo });
-            const prs = await github.paginate(github.rest.pulls.list, { owner, repo, state: "all", per_page: 100 });
             const own = (p) => p.head.repo && p.head.repo.full_name === `${owner}/${repo}`;
+            const prState = context.eventName === "pull_request" ? "open" : "all";
+            const prs = await github.paginate(github.rest.pulls.list, { owner, repo, state: prState, per_page: 100 });
             const openRefs = new Set(prs.filter((p) => p.state === "open" && own(p)).map((p) => p.head.ref));
-            const mergedShas = new Set(prs.filter((p) => p.merged_at && own(p)).map((p) => p.head.sha));
+            const mergedHeads = new Set(
+              prs.filter((p) => p.merged_at && own(p)).map((p) => `${p.head.ref}\0${p.head.sha}`)
+            );
 
             let branches;
             if (context.eventName === "pull_request") {
-              const ref = context.payload.pull_request.head.ref;
+              const pr = context.payload.pull_request;
+              mergedHeads.add(`${pr.head.ref}\0${pr.head.sha}`);
               try {
-                const { data } = await github.rest.repos.getBranch({ owner, repo, branch: ref });
+                const { data } = await github.rest.repos.getBranch({ owner, repo, branch: pr.head.ref });
                 branches = [data];
               } catch (e) { if (e.status === 404) return; throw e; }
             } else {
@@ -56,7 +60,7 @@ jobs:
             const deleted = [];
             for (const b of branches) {
               if (b.name === info.default_branch || b.protected) continue;
-              if (openRefs.has(b.name) || !mergedShas.has(b.commit.sha)) continue;
+              if (openRefs.has(b.name) || !mergedHeads.has(`${b.name}\0${b.commit.sha}`)) continue;
               try {
                 await github.rest.git.deleteRef({ owner, repo, ref: `heads/${b.name}` });
                 deleted.push(b.name);

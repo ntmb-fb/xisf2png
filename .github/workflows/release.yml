@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -66,8 +66,8 @@ jobs:
         if: matrix.cli_target != 'universal-apple-darwin'
         shell: bash
         run: |
-          cargo build --release --locked --bin xisf2png     --target ${{ matrix.cli_target }}
-          cargo build --release --locked --bin xisf2png-gui --target ${{ matrix.gui_target }}
+          cargo build --release --locked --no-default-features --bin xisf2png --target ${{ matrix.cli_target }}
+          cargo build --release --locked --bin xisf2png-gui                   --target ${{ matrix.gui_target }}
 
       - name: Build (macOS universal)
         if: matrix.cli_target == 'universal-apple-darwin'
@@ -85,7 +85,9 @@ jobs:
 
       - name: Smoke test
         shell: bash
-        run: target/${{ matrix.cli_target }}/release/xisf2png --version
+        run: |
+          target/${{ matrix.cli_target }}/release/xisf2png --version
+          target/${{ matrix.gui_target }}/release/xisf2png-gui --version
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
@@ -162,8 +164,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          curl -fsSL -o /tmp/appimagetool "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
-          curl -fsSL -o /tmp/linuxdeploy "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
+          APPIMAGETOOL_TAG="1.9.1"
+          APPIMAGETOOL_SHA256="ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0"
+          LINUXDEPLOY_TAG="1-alpha-20251107-1"
+          LINUXDEPLOY_SHA256="c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d"
+
+          curl -fsSL -o /tmp/appimagetool \
+            "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_TAG}/appimagetool-x86_64.AppImage"
+          curl -fsSL -o /tmp/linuxdeploy \
+            "https://github.com/linuxdeploy/linuxdeploy/releases/download/${LINUXDEPLOY_TAG}/linuxdeploy-x86_64.AppImage"
+          printf '%s  /tmp/appimagetool\n%s  /tmp/linuxdeploy\n' \
+            "$APPIMAGETOOL_SHA256" "$LINUXDEPLOY_SHA256" | sha256sum -c -
           chmod +x /tmp/appimagetool /tmp/linuxdeploy
 
           appdir="$(mktemp -d)/AppDir"
@@ -174,9 +185,12 @@ jobs:
           [Desktop Entry]
           Type=Application
           Name=xisf2png
-          Exec=xisf2png-gui
+          Comment=Convert XISF / FITS astrophotos to PNG
+          Exec=xisf2png-gui %F
           Icon=xisf2png
-          Categories=Graphics;
+          Terminal=false
+          Categories=Graphics;Photography;
+          MimeType=image/fits;application/fits;image/x-fits;application/x-xisf;
           EOF
 
           # No FUSE on GitHub-hosted runners; these tools extract-and-run themselves instead of mounting.
@@ -200,6 +214,8 @@ jobs:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v8
         with:

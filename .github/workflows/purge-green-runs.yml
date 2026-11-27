@@ -14,7 +14,7 @@ name: Purge green run logs
 
 on:
   workflow_run:
-    workflows: ["Release", "Delete merged branches"]
+    workflows: ["CI", "Release", "Delete merged branches"]
     types: [completed]
   workflow_dispatch:
 

@@ -22,6 +22,7 @@ archive contains both the CLI (`xisf2png`) and the GUI (`xisf2png-gui`).
 | `xisf2png-windows-x86_64.zip`     | Windows 10/11, 64-bit                                      |
 | `xisf2png-macos-universal.zip`    | macOS 11+, Intel and Apple Silicon. Contains `xisf2png.app` (double-clickable) and the `xisf2png` CLI. |
 | `xisf2png-linux-x86_64.tar.gz`    | x86-64 Linux. CLI is static (any distro); GUI needs a Wayland (or X11) desktop. |
+| `xisf2png-gui-linux-x86_64.AppImage` | Portable x86-64 Linux GUI AppImage (self-contained).      |
 | `xisf2png-linux-aarch64.tar.gz`   | ARM64 Linux (Raspberry Pi 4/5, ARM servers), same notes.  |
 
 Unpack and put the binaries somewhere on your `PATH` (and, on macOS, drag
@@ -254,7 +255,8 @@ cargo build --release
 ```
 
 Binaries land in `target/release/` as `xisf2png` and `xisf2png-gui`
-(`.exe` on Windows). To build just one: `cargo build --release --bin xisf2png`.
+(`.exe` on Windows). To build only the CLI without GUI dependencies:
+`cargo build --release --no-default-features --bin xisf2png`.
 
 On Linux, the GUI needs two small development packages at build time (it
 loads the real libraries dynamically at run time), and the static musl CLI
@@ -319,7 +321,6 @@ integration.
 
 | Crate       | Purpose                                     |
 | ----------- | -------------------------------------------- |
-| `image`     | PNG encoding/decoding, 4K resize            |
 | `eframe`    | GUI (egui, OpenGL via glow, Wayland/X11)    |
 | `rfd`       | native folder / file dialogs                |
 

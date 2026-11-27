@@ -10,6 +10,7 @@
 //!   `.xisf`, which is not in the shared MIME database.
 //! * macOS: nothing to install; the window accepts dropped files.
 
+#[cfg(not(target_os = "macos"))]
 use std::path::PathBuf;
 
 pub const EXTENSIONS: &[&str] = &["xisf", "fits", "fit", "fts"];
@@ -19,8 +20,57 @@ pub struct Outcome {
     pub message: String,
 }
 
+#[cfg(not(target_os = "macos"))]
 fn exe_path() -> Result<PathBuf, String> {
+    // When running from a Linux AppImage, `current_exe()` points inside the
+    // ephemeral `/tmp/.mount_*` directory that disappears on exit; use the
+    // real AppImage path instead.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    if let Some(appimage) = std::env::var_os("APPIMAGE").filter(|v| !v.is_empty()) {
+        return Ok(PathBuf::from(appimage));
+    }
     std::env::current_exe().map_err(|e| format!("cannot determine this program's path: {e}"))
+}
+
+/// Format an executable path for a FreeDesktop `.desktop` `Exec=` key inside
+/// double quotes, escaping both general string-value backslashes and Exec
+/// special characters (`"`, `` ` ``, `$`, `\`, and `%` -> `%%`).
+#[cfg(any(test, all(unix, not(target_os = "macos"))))]
+fn format_desktop_exec_path(exe: &std::path::Path) -> Result<String, String> {
+    let raw = exe
+        .to_str()
+        .ok_or_else(|| "executable path is not valid UTF-8".to_string())?;
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        match ch {
+            '\n' | '\r' | '\0' => {
+                return Err("executable path contains control characters".into());
+            }
+            '\\' => out.push_str(r"\\\\"),
+            '"' => out.push_str(r#"\\""#),
+            '`' => out.push_str(r"\\`"),
+            '$' => out.push_str(r"\\$"),
+            '%' => out.push_str("%%"),
+            c => out.push(c),
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(any(test, all(unix, not(target_os = "macos"))))]
+fn desktop_entry(exe: &std::path::Path) -> Result<String, String> {
+    let exec = format_desktop_exec_path(exe)?;
+    Ok(format!(
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Name=xisf2png\n\
+         Comment=Convert XISF / FITS astrophotos to PNG\n\
+         Exec=\"{exec}\" %F\n\
+         Icon=xisf2png\n\
+         Terminal=false\n\
+         Categories=Graphics;Photography;\n\
+         MimeType=image/fits;application/fits;image/x-fits;application/x-xisf;\n"
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -28,7 +78,7 @@ fn exe_path() -> Result<PathBuf, String> {
 // ---------------------------------------------------------------------------
 #[cfg(windows)]
 mod imp {
-    use super::*;
+    use super::{exe_path, Outcome, EXTENSIONS};
     use winreg::enums::{HKEY_CURRENT_USER, KEY_READ};
     use winreg::RegKey;
 
@@ -45,15 +95,27 @@ mod imp {
     }
 
     pub fn is_installed() -> bool {
-        RegKey::predef(HKEY_CURRENT_USER)
-            .open_subkey_with_flags(format!(r"{}\command", key_path(EXTENSIONS[0])), KEY_READ)
-            .is_ok()
+        let Ok(exe) = exe_path() else {
+            return false;
+        };
+        let expected = format!("\"{}\" \"%1\"", exe.display());
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        EXTENSIONS.iter().all(|ext| {
+            hkcu.open_subkey_with_flags(format!(r"{}\command", key_path(ext)), KEY_READ)
+                .and_then(|k| k.get_value::<String, _>(""))
+                .is_ok_and(|cmd| cmd == expected)
+        })
     }
 
     pub fn install() -> Outcome {
         let exe = match exe_path() {
             Ok(p) => p.display().to_string(),
-            Err(e) => return Outcome { ok: false, message: e },
+            Err(e) => {
+                return Outcome {
+                    ok: false,
+                    message: e,
+                }
+            }
         };
         let command = format!("\"{exe}\" \"%1\"");
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
@@ -108,32 +170,44 @@ mod imp {
 // ---------------------------------------------------------------------------
 #[cfg(all(unix, not(target_os = "macos")))]
 mod imp {
-    use super::*;
+    use super::{desktop_entry, exe_path, Outcome};
+    use std::path::{Path, PathBuf};
     use std::process::Command;
 
-    fn data_home() -> PathBuf {
-        std::env::var_os("XDG_DATA_HOME")
+    fn data_home() -> Result<PathBuf, String> {
+        if let Some(p) = std::env::var_os("XDG_DATA_HOME")
             .map(PathBuf::from)
             .filter(|p| p.is_absolute())
-            .unwrap_or_else(|| {
-                PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/share")
-            })
+        {
+            return Ok(p);
+        }
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .ok_or_else(|| "neither XDG_DATA_HOME nor HOME is set".to_string())?;
+        Ok(home.join(".local/share"))
     }
-    fn desktop_file() -> PathBuf {
-        data_home().join("applications/xisf2png.desktop")
+    fn desktop_file(home: &Path) -> PathBuf {
+        home.join("applications/xisf2png.desktop")
     }
-    fn mime_file() -> PathBuf {
-        data_home().join("mime/packages/xisf2png.xml")
+    fn mime_file(home: &Path) -> PathBuf {
+        home.join("mime/packages/xisf2png.xml")
     }
-    fn icon_file() -> PathBuf {
-        data_home().join("icons/hicolor/256x256/apps/xisf2png.png")
+    fn icon_file(home: &Path) -> PathBuf {
+        home.join("icons/hicolor/256x256/apps/xisf2png.png")
     }
 
     pub fn is_installed() -> bool {
-        desktop_file().exists()
+        let (Ok(home), Ok(exe)) = (data_home(), exe_path()) else {
+            return false;
+        };
+        let Ok(expected) = desktop_entry(&exe) else {
+            return false;
+        };
+        std::fs::read_to_string(desktop_file(&home)).is_ok_and(|actual| actual == expected)
     }
 
-    fn write(path: &PathBuf, contents: &[u8]) -> Result<(), String> {
+    fn write(path: &Path, contents: &[u8]) -> Result<(), String> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
         }
@@ -141,22 +215,33 @@ mod imp {
     }
 
     pub fn install() -> Outcome {
+        let home = match data_home() {
+            Ok(h) => h,
+            Err(e) => {
+                return Outcome {
+                    ok: false,
+                    message: e,
+                }
+            }
+        };
         let exe = match exe_path() {
             Ok(p) => p,
-            Err(e) => return Outcome { ok: false, message: e },
+            Err(e) => {
+                return Outcome {
+                    ok: false,
+                    message: e,
+                }
+            }
         };
-        let desktop = format!(
-            "[Desktop Entry]\n\
-             Type=Application\n\
-             Name=xisf2png\n\
-             Comment=Convert XISF / FITS astrophotos to PNG\n\
-             Exec=\"{}\" %F\n\
-             Icon=xisf2png\n\
-             Terminal=false\n\
-             Categories=Graphics;Photography;\n\
-             MimeType=image/fits;application/fits;image/x-fits;application/x-xisf;\n",
-            exe.display()
-        );
+        let desktop = match desktop_entry(&exe) {
+            Ok(d) => d,
+            Err(e) => {
+                return Outcome {
+                    ok: false,
+                    message: e,
+                }
+            }
+        };
         let mime = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
              <mime-info xmlns=\"http://www.freedesktop.org/standards/shared-mime-info\">\n\
              \x20 <mime-type type=\"application/x-xisf\">\n\
@@ -166,39 +251,55 @@ mod imp {
              \x20 </mime-type>\n\
              </mime-info>\n";
 
+        let desk_path = desktop_file(&home);
         let steps = [
-            write(&desktop_file(), desktop.as_bytes()),
-            write(&mime_file(), mime.as_bytes()),
-            write(&icon_file(), include_bytes!("../../../assets/icon-256.png")),
+            write(&desk_path, desktop.as_bytes()),
+            write(&mime_file(&home), mime.as_bytes()),
+            write(
+                &icon_file(&home),
+                include_bytes!("../../../assets/icon-256.png"),
+            ),
         ];
         if let Some(Err(e)) = steps.into_iter().find(|r| r.is_err()) {
-            return Outcome { ok: false, message: e };
+            return Outcome {
+                ok: false,
+                message: e,
+            };
         }
         // Best effort: refresh the desktop databases if the tools exist.
         let _ = Command::new("update-desktop-database")
-            .arg(data_home().join("applications"))
+            .arg(home.join("applications"))
             .output();
         let _ = Command::new("update-mime-database")
-            .arg(data_home().join("mime"))
+            .arg(home.join("mime"))
             .output();
         Outcome {
             ok: true,
             message: format!(
                 "Installed {} — xisf2png now appears under \"Open with\" for FITS and XISF files.",
-                desktop_file().display()
+                desk_path.display()
             ),
         }
     }
 
     pub fn uninstall() -> Outcome {
-        for p in [desktop_file(), mime_file(), icon_file()] {
+        let home = match data_home() {
+            Ok(h) => h,
+            Err(e) => {
+                return Outcome {
+                    ok: false,
+                    message: e,
+                }
+            }
+        };
+        for p in [desktop_file(&home), mime_file(&home), icon_file(&home)] {
             let _ = std::fs::remove_file(p);
         }
         let _ = Command::new("update-desktop-database")
-            .arg(data_home().join("applications"))
+            .arg(home.join("applications"))
             .output();
         let _ = Command::new("update-mime-database")
-            .arg(data_home().join("mime"))
+            .arg(home.join("mime"))
             .output();
         Outcome {
             ok: true,
@@ -217,7 +318,7 @@ mod imp {
 // ---------------------------------------------------------------------------
 #[cfg(target_os = "macos")]
 mod imp {
-    use super::*;
+    use super::Outcome;
 
     pub fn is_installed() -> bool {
         false
@@ -244,4 +345,26 @@ pub use imp::{install, is_installed, uninstall, HINT, INSTALL_LABEL, UNINSTALL_L
 /// Whether this platform has something to install.
 pub fn supported() -> bool {
     !INSTALL_LABEL.is_empty()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn desktop_exec_escapes_special_chars() {
+        let path = Path::new(r#"/opt/100% $user "app" `bin`\xisf2png-gui"#);
+        let entry = desktop_entry(path).unwrap();
+        assert!(
+            entry.contains(r#"Exec="/opt/100%% \\$user \\"app\\" \\`bin\\`\\\\xisf2png-gui" %F"#),
+            "unexpected entry:\n{entry}"
+        );
+    }
+
+    #[test]
+    fn desktop_exec_rejects_newlines() {
+        let path = Path::new("/opt/bad\npath/xisf2png-gui");
+        assert!(desktop_entry(path).is_err());
+    }
 }

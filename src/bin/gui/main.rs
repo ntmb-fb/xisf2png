@@ -7,7 +7,7 @@
 mod instance;
 mod shell;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
@@ -16,25 +16,62 @@ use std::thread::JoinHandle;
 use eframe::egui::{self, Color32, RichText};
 use xisf2png::{FileStatus, Options, Progress, Summary};
 
+#[cfg(windows)]
+fn attach_parent_console() {
+    const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn AttachConsole(dw_process_id: u32) -> i32;
+    }
+    // SAFETY: standard Win32 call with no pointer arguments; failure simply
+    // means there is no parent console (e.g., launched from Explorer).
+    unsafe {
+        let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+    }
+}
+
+#[cfg(not(windows))]
+fn attach_parent_console() {}
+
 fn main() -> eframe::Result {
-    // Scriptable desktop integration (also used by tests and installers).
-    if let Some(flag) = std::env::args().nth(1).filter(|a| a.starts_with("--")) {
+    // Scriptable desktop integration & info flags (also used by tests and installers).
+    if let Some(flag) = std::env::args().nth(1).filter(|a| a.starts_with('-')) {
+        attach_parent_console();
         let outcome = match flag.as_str() {
             "--install-context-menu" => shell::install(),
             "--uninstall-context-menu" => shell::uninstall(),
             "--context-menu-status" => shell::Outcome {
                 ok: true,
-                message: if shell::is_installed() { "installed".into() } else { "not installed".into() },
+                message: if shell::is_installed() {
+                    "installed".into()
+                } else {
+                    "not installed".into()
+                },
+            },
+            "--version" | "-V" => shell::Outcome {
+                ok: true,
+                message: format!("xisf2png-gui {}", xisf2png::VERSION),
+            },
+            "--help" | "-h" => shell::Outcome {
+                ok: true,
+                message: format!(
+                    "xisf2png-gui {} - desktop GUI for xisf2png\n\n\
+                     Usage:\n\
+                     \x20 xisf2png-gui [file|folder ...]\n\
+                     \x20 xisf2png-gui --install-context-menu | --uninstall-context-menu | --context-menu-status\n\
+                     \x20 xisf2png-gui --version | --help",
+                    xisf2png::VERSION
+                ),
             },
             other => shell::Outcome {
                 ok: false,
                 message: format!(
-                    "unknown option {other}; use --install-context-menu, --uninstall-context-menu or --context-menu-status"
+                    "unknown option {other}; use --install-context-menu, --uninstall-context-menu, --context-menu-status, --version or --help"
                 ),
             },
         };
         println!("{}", outcome.message);
-        std::process::exit(if outcome.ok { 0 } else { 1 });
+        std::process::exit(i32::from(!outcome.ok));
     }
 
     // Files / folders given on the command line (Explorer "Open with",
@@ -42,8 +79,9 @@ fn main() -> eframe::Result {
     let initial = instance::paths_from_args();
 
     // If another window is already open, hand the paths to it and quit.
-    let Some(listener) = instance::claim(&initial) else {
-        return Ok(());
+    let listener = match instance::claim(&initial) {
+        instance::Claim::Primary(l) => l,
+        instance::Claim::Forwarded => return Ok(()),
     };
 
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/icon-256.png"))
@@ -63,13 +101,16 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             install_fallback_font(&cc.egui_ctx);
-            let (tx, rx) = mpsc::channel();
-            instance::serve(listener, tx, cc.egui_ctx.clone());
+            let incoming = listener.map(|l| {
+                let (tx, rx) = mpsc::channel();
+                instance::serve(l, tx, cc.egui_ctx.clone());
+                rx
+            });
             let mut app = App {
                 resize4k: true,
                 lookup: true,
                 ask_names: true,
-                incoming: Some(rx),
+                incoming,
                 integration_installed: shell::is_installed(),
                 ..App::default()
             };
@@ -80,13 +121,15 @@ fn main() -> eframe::Result {
 }
 
 /// egui's built-in fonts miss glyphs such as "→", "°", "′" and "″" that the
-/// object labels and notes use. Append the bundled DejaVu font as a fallback
+/// object labels and notes use. Append the bundled `DejaVu` font as a fallback
 /// to every font family so they render instead of showing boxes.
 fn install_fallback_font(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(
         "dejavu-fallback".to_owned(),
-        Arc::new(egui::FontData::from_static(xisf2png::post::bundled_font_bytes())),
+        Arc::new(egui::FontData::from_static(
+            xisf2png::post::bundled_font_bytes(),
+        )),
     );
     for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
         fonts
@@ -123,14 +166,21 @@ fn auto_zoom(ctx: &egui::Context, state: &mut AutoZoom) {
     };
     // `monitor_size` is in points at the zoom of the *previous* frame, so
     // right after a zoom change this is off for one frame. Only act on a
-    // size seen twice in a row.
+    // size seen twice in a row, and allow a small pixel tolerance so manual
+    // Ctrl +/- zoom rounding does not trigger a reset.
     let current = ctx.zoom_factor();
     let physical = (monitor * native_ppp * current).round();
-    if state.applied_for == Some(physical) {
+    if state
+        .applied_for
+        .is_some_and(|prev| (prev - physical).abs().max_elem() <= 4.0)
+    {
         state.candidate = None;
         return;
     }
-    if state.candidate != Some(physical) {
+    if !state
+        .candidate
+        .is_some_and(|cand| (cand - physical).abs().max_elem() <= 4.0)
+    {
         state.candidate = Some(physical);
         ctx.request_repaint();
         return;
@@ -201,8 +251,8 @@ fn path_row(ui: &mut egui::Ui, label: &str, text: &mut String, hint: &str) -> bo
 /// Messages from the worker thread.
 enum Msg {
     Progress(Progress),
-    /// An identified object has no nickname: ask for one. The worker waits
-    /// for the answer on `reply` (`None` = go without).
+    /// An object has no nickname (or lookup failed): ask for one. The worker
+    /// waits for the answer on `reply` (`None` = go without).
     AskName {
         designation: String,
         kind: String,
@@ -224,6 +274,16 @@ struct Job {
     rx: Receiver<Msg>,
     cancel: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
+    png_only: bool,
+    input_kind: &'static str,
+}
+
+/// Completed batch summary together with the mode that produced it, so
+/// changing checkboxes afterwards does not rewrite the summary text.
+struct RunSummary {
+    summary: Summary,
+    png_only: bool,
+    input_kind: &'static str,
 }
 
 #[derive(Default)]
@@ -236,7 +296,7 @@ struct App {
     resize4k: bool,
     png_only: bool,
     lookup: bool,
-    /// Ask for a nickname when an identified object has none.
+    /// Ask for a nickname when none is found or lookup fails.
     ask_names: bool,
     font_file: String,
     /// Explicit files (right-click selection, drag and drop, "Add files…").
@@ -256,10 +316,14 @@ struct App {
     log: Vec<Progress>,
     done: usize,
     total: usize,
-    summary: Option<Summary>,
+    summary: Option<RunSummary>,
     error: Option<String>,
 
     zoom: AutoZoom,
+}
+
+fn canonical_or_self(p: &Path) -> PathBuf {
+    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
 impl App {
@@ -267,13 +331,14 @@ impl App {
         let input = self.input_dir.trim();
         let output = self.output_dir.trim();
         let font = self.font_file.trim();
+        let file_mode = !self.files.is_empty();
         Options {
             input_dir: PathBuf::from(if input.is_empty() { "." } else { input }),
             output_dir: (!output.is_empty()).then(|| PathBuf::from(output)),
-            recursive: self.recursive,
+            recursive: !file_mode && self.recursive,
             overwrite: self.overwrite,
             resize4k: self.resize4k,
-            png_only: self.png_only,
+            png_only: !file_mode && self.png_only,
             font: (!font.is_empty()).then(|| PathBuf::from(font)),
             lookup: self.lookup,
             files: self.files.clone(),
@@ -282,19 +347,40 @@ impl App {
     }
 
     /// Take in paths from the command line, another instance, or a drop:
-    /// folders become the input folder, files join the file list.
+    /// files join the file list; dropping a folder alone switches back to
+    /// folder mode with that folder as `input_dir`.
     fn add_paths(&mut self, paths: Vec<PathBuf>) {
+        let mut added_file = false;
+        let mut last_dir: Option<PathBuf> = None;
         for p in paths {
             if p.is_dir() {
-                self.input_dir = p.display().to_string();
-            } else if p.is_file() && !self.files.contains(&p) {
-                self.files.push(p);
+                last_dir = Some(p);
+            } else if p.is_file() {
+                let canon = canonical_or_self(&p);
+                let already = self
+                    .files
+                    .iter()
+                    .any(|existing| canonical_or_self(existing) == canon);
+                if !already {
+                    self.files.push(p);
+                }
+                added_file = true;
+            }
+        }
+        if let Some(dir) = last_dir {
+            self.input_dir = dir.display().to_string();
+            if !added_file {
+                self.files.clear();
             }
         }
     }
 
     /// Paths from other instances and from drag-and-drop onto the window.
-    fn collect_incoming(&mut self, ctx: &egui::Context) {
+    /// Deferred while a job is running so the disabled form is not mutated.
+    fn collect_incoming(&mut self, ctx: &egui::Context, running: bool) {
+        if running {
+            return;
+        }
         let mut new = Vec::new();
         if let Some(rx) = &self.incoming {
             while let Ok(batch) = rx.try_recv() {
@@ -323,6 +409,8 @@ impl App {
 
     fn start(&mut self, ctx: &egui::Context) {
         let opts = self.options();
+        let png_only = opts.png_only;
+        let input_kind = opts.input_kind();
         let cancel = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::channel();
 
@@ -338,6 +426,9 @@ impl App {
         let handle = std::thread::spawn(move || {
             // Hand the question to the UI thread and wait for the answer.
             let ask = |designation: &str, kind: &str| {
+                if cancel_flag.load(Ordering::Relaxed) {
+                    return None;
+                }
                 let (reply, answer) = mpsc::channel();
                 tx.send(Msg::AskName {
                     designation: designation.to_string(),
@@ -361,6 +452,8 @@ impl App {
             rx,
             cancel,
             handle: Some(handle),
+            png_only,
+            input_kind,
         });
     }
 
@@ -390,7 +483,11 @@ impl App {
                 }
                 Msg::Done(Ok(s)) => {
                     self.total = s.total;
-                    self.summary = Some(s);
+                    self.summary = Some(RunSummary {
+                        summary: s,
+                        png_only: job.png_only,
+                        input_kind: job.input_kind,
+                    });
                     finished = true;
                 }
                 Msg::Done(Err(e)) => {
@@ -411,7 +508,9 @@ impl App {
     /// The "no nickname found" dialog. Skipping (or dismissing it) leaves the
     /// object without a nickname.
     fn name_prompt_ui(&mut self, ctx: &egui::Context) {
-        let Some(prompt) = &mut self.name_prompt else { return };
+        let Some(prompt) = &mut self.name_prompt else {
+            return;
+        };
         let mut answer: Option<Option<String>> = None;
         let modal = egui::Modal::new(egui::Id::new("name-prompt")).show(ctx, |ui| {
             ui.set_width(380.0);
@@ -465,12 +564,24 @@ impl App {
 }
 
 impl eframe::App for App {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        if let Some(mut job) = self.job.take() {
+            job.cancel.store(true, Ordering::Relaxed);
+            // Drop any pending prompt so the worker unblocks from `answer.recv()`.
+            self.name_prompt = None;
+            if let Some(h) = job.handle.take() {
+                let _ = h.join();
+            }
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         auto_zoom(ui.ctx(), &mut self.zoom);
         self.poll();
-        self.collect_incoming(ui.ctx());
         let running = self.job.is_some();
+        self.collect_incoming(ui.ctx(), running);
         let file_mode = !self.files.is_empty();
+        let effective_png_only = !file_mode && self.png_only;
 
         egui::Frame::central_panel(ui.style()).show(ui, |ui| {
             ui.heading("XISF / FITS → PNG batch converter");
@@ -502,22 +613,35 @@ impl eframe::App for App {
                         }
                     });
                     egui::Frame::group(ui.style()).show(ui, |ui| {
+                        let mut remove_idx: Option<usize> = None;
                         egui::ScrollArea::vertical()
                             .id_salt("files")
                             .max_height(110.0)
                             .auto_shrink([false, true])
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
-                                for f in &self.files {
+                                for (idx, f) in self.files.iter().enumerate() {
                                     let name =
                                         f.file_name().map(|n| n.to_string_lossy().into_owned());
-                                    ui.label(
-                                        RichText::new(name.unwrap_or_default())
-                                            .text_style(egui::TextStyle::Monospace),
-                                    )
-                                    .on_hover_text(f.display().to_string());
+                                    ui.horizontal(|ui| {
+                                        if ui
+                                            .small_button("×")
+                                            .on_hover_text("Remove file")
+                                            .clicked()
+                                        {
+                                            remove_idx = Some(idx);
+                                        }
+                                        ui.label(
+                                            RichText::new(name.unwrap_or_default())
+                                                .text_style(egui::TextStyle::Monospace),
+                                        )
+                                        .on_hover_text(f.display().to_string());
+                                    });
                                 }
                             });
+                        if let Some(idx) = remove_idx {
+                            self.files.remove(idx);
+                        }
                     });
                 } else {
                     if path_row(ui, "Input folder", &mut self.input_dir, "current folder") {
@@ -581,7 +705,10 @@ impl eframe::App for App {
                     ui.checkbox(&mut self.overwrite, "Overwrite existing PNGs");
                     ui.add_enabled(
                         !file_mode,
-                        egui::Checkbox::new(&mut self.png_only, "PNG only (no XISF/FITS conversion)"),
+                        egui::Checkbox::new(
+                            &mut self.png_only,
+                            "PNG only (no XISF/FITS conversion)",
+                        ),
                     )
                     .on_hover_text(
                         "Take existing .png files and only resize/stamp them. \
@@ -589,14 +716,14 @@ impl eframe::App for App {
                          is handled by its extension.)",
                     );
                     ui.add_enabled(
-                        !self.png_only,
+                        !effective_png_only,
                         egui::Checkbox::new(
                             &mut self.resize4k,
                             "Resize to 3840×2160 and stamp object name",
                         ),
                     );
                     ui.add_enabled(
-                        self.resize4k || self.png_only,
+                        self.resize4k || effective_png_only,
                         egui::Checkbox::new(
                             &mut self.lookup,
                             "Stamp object name (SIMBAD lookup); unticked = file name",
@@ -611,12 +738,15 @@ impl eframe::App for App {
                          Unticked: stamp the plain file name (same as --filename in the CLI).",
                     );
                     ui.add_enabled(
-                        self.lookup && (self.resize4k || self.png_only),
-                        egui::Checkbox::new(&mut self.ask_names, "Ask for a nickname when none is found"),
+                        self.lookup && (self.resize4k || effective_png_only),
+                        egui::Checkbox::new(
+                            &mut self.ask_names,
+                            "Ask for a nickname when none is found",
+                        ),
                     )
                     .on_hover_text(
-                        "When an identified object has no common name, ask for one \
-                         (optional). Names you enter are saved to your names file.",
+                        "When an object has no common name or online lookup fails, \
+                         ask for one (optional). Names you enter are saved to your names file.",
                     );
                 });
             });
@@ -663,8 +793,10 @@ impl eframe::App for App {
                         if let Some(job) = &self.job {
                             job.cancel.store(true, Ordering::Relaxed);
                         }
+                        self.name_prompt = None;
                     }
                     ui.spinner();
+                    #[allow(clippy::cast_precision_loss)]
                     let frac = if self.total > 0 {
                         self.done as f32 / self.total as f32
                     } else {
@@ -677,9 +809,13 @@ impl eframe::App for App {
                     );
                 } else {
                     let label = if file_mode {
-                        format!("Convert {} file{}", self.files.len(), if self.files.len() == 1 { "" } else { "s" })
+                        format!(
+                            "Convert {} file{}",
+                            self.files.len(),
+                            if self.files.len() == 1 { "" } else { "s" }
+                        )
                     } else if self.png_only {
-                        "Resize && stamp PNGs".to_string()
+                        "Resize & stamp PNGs".to_string()
                     } else {
                         "Convert".to_string()
                     };
@@ -689,10 +825,15 @@ impl eframe::App for App {
                     {
                         self.start(ui.ctx());
                     }
-                    if let Some(s) = &self.summary {
-                        let verb = if self.png_only { "Processed" } else { "Converted" };
+                    if let Some(run) = &self.summary {
+                        let s = &run.summary;
+                        let verb = if run.png_only {
+                            "Processed"
+                        } else {
+                            "Converted"
+                        };
                         let text = if s.total == 0 {
-                            format!("No {} files found.", self.options().input_kind())
+                            format!("No {} files found.", run.input_kind)
                         } else {
                             format!(
                                 "{verb}: {}   Skipped: {}   Failed: {}{}",
@@ -714,8 +855,8 @@ impl eframe::App for App {
                     }
                 }
             });
-            if let Some(s) = &self.summary {
-                for w in &s.warnings {
+            if let Some(run) = &self.summary {
+                for w in &run.summary.warnings {
                     ui.colored_label(Color32::from_rgb(235, 180, 90), format!("⚠ {w}"));
                 }
             }
@@ -768,7 +909,7 @@ impl eframe::App for App {
         self.name_prompt_ui(ui.ctx());
 
         // ---- Drag-and-drop overlay ----------------------------------------------
-        let hovering = ui.ctx().input(|i| !i.raw.hovered_files.is_empty());
+        let hovering = !running && ui.ctx().input(|i| !i.raw.hovered_files.is_empty());
         if hovering {
             let rect = ui.ctx().content_rect();
             let painter = ui.ctx().layer_painter(egui::LayerId::new(
@@ -784,5 +925,47 @@ impl eframe::App for App {
                 Color32::WHITE,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn options_ignore_png_only_and_recursive_in_file_mode() {
+        let app = App {
+            png_only: true,
+            recursive: true,
+            resize4k: false,
+            files: vec![PathBuf::from("a.xisf")],
+            ..App::default()
+        };
+        let opts = app.options();
+        assert!(!opts.png_only);
+        assert!(!opts.recursive);
+        assert_eq!(opts.files, vec![PathBuf::from("a.xisf")]);
+    }
+
+    #[test]
+    fn dropping_folder_exits_file_mode_and_deduplicates_files() {
+        let dir = std::env::temp_dir().join(format!("xisf2png-gui-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let file = dir.join("sub.fits");
+        std::fs::write(&file, b"").unwrap();
+
+        let mut app = App::default();
+        app.add_paths(vec![file.clone(), dir.join("./sub.fits")]);
+        assert_eq!(app.files.len(), 1, "equivalent paths should deduplicate");
+
+        app.add_paths(vec![dir.clone()]);
+        assert!(
+            app.files.is_empty(),
+            "dropping a folder should exit file mode"
+        );
+        assert_eq!(app.input_dir, dir.display().to_string());
+
+        let _ = std::fs::remove_file(&file);
+        let _ = std::fs::remove_dir(&dir);
     }
 }
