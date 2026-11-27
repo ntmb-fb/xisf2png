@@ -159,6 +159,19 @@ jobs:
           (cd dist && zip -r -y "../$asset" .)
           echo "ASSET=$asset" >> "$GITHUB_ENV"
 
+          dmg_root=$(mktemp -d)
+          cp -R "$app" "$dmg_root/"
+          cp "$bins/xisf2png" README.md "$dmg_root/"
+          ln -s /Applications "$dmg_root/Applications"
+          dmg="xisf2png-${{ matrix.name }}.dmg"
+          for attempt in 1 2 3; do
+            if hdiutil create -volname "xisf2png" -srcfolder "$dmg_root" -ov -format UDZO "$dmg"; then
+              break
+            fi
+            [ "$attempt" -eq 3 ] && exit 1
+            sleep 3
+          done
+
       - name: Build AppImage
         if: matrix.name == 'linux-x86_64'
         shell: bash
@@ -207,6 +220,7 @@ jobs:
           path: |
             ${{ env.ASSET }}
             xisf2png-gui-*.AppImage
+            xisf2png-*.dmg
           if-no-files-found: error
 
   release:

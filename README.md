@@ -21,6 +21,7 @@ archive contains both the CLI (`xisf2png`) and the GUI (`xisf2png-gui`).
 | --------------------------------- | ---------------------------------------------------------- |
 | `xisf2png-windows-x86_64.zip`     | Windows 10/11, 64-bit                                      |
 | `xisf2png-macos-universal.zip`    | macOS 11+, Intel and Apple Silicon. Contains `xisf2png.app` (double-clickable) and the `xisf2png` CLI. |
+| `xisf2png-macos-universal.dmg`    | macOS 11+ disk image (Intel and Apple Silicon) to drag `xisf2png.app` to Applications; also includes the `xisf2png` CLI. |
 | `xisf2png-linux-x86_64.tar.gz`    | x86-64 Linux. CLI is static (any distro); GUI needs a Wayland (or X11) desktop. |
 | `xisf2png-gui-linux-x86_64.AppImage` | Portable x86-64 Linux GUI AppImage (self-contained).      |
 | `xisf2png-linux-aarch64.tar.gz`   | ARM64 Linux (Raspberry Pi 4/5, ARM servers), same notes.  |
